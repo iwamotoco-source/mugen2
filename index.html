@@ -27,8 +27,7 @@
 (function () {
   var msg = document.getElementById('msg');
   var go  = document.getElementById('go');
-  var base = location.pathname.replace(/\/[^\/]*$/, '/');
-  if (!base.endsWith('/')) base += '/';
+  var base = location.pathname.replace(/[^\/]*$/, '');
   go.href = base + 'chat/agent';
 
   if (!('serviceWorker' in navigator)) {
@@ -36,104 +35,17 @@
     go.hidden = false; return;
   }
 
-  var swCode = `
-    const UPSTREAM = 'https://venice.ai';
-    const BASE = self.location.pathname.replace(/\\/[s\\S]*\$/, '\\/');
-    const PROXIES = [
-      'https://corsproxy.io/?url=',
-      'https://api.allorigins.win/raw?url=',
-      'https://thingproxy.freeboard.io/fetch/',
-    ];
-    let proxyIdx = 0;
-    function nextProxy() {
-      const p = PROXIES[proxyIdx % PROXIES.length];
-      proxyIdx++;
-      return p;
-    }
-    const MARK = 'data-vs-shell';
-    const OWN = ['sw.js', 'index.html', 'manifest.webmanifest', 'icon.svg'];
-    self.addEventListener('install', () => self.skipWaiting());
-    self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
-    self.addEventListener('fetch', function (e) {
-      const req = e.request;
-      const url = new URL(req.url);
-      if (url.origin !== self.location.origin) return;
-      const rel = url.pathname.slice(BASE.length);
-      if (OWN.indexOf(rel) >= 0) return;
-      if (rel === 'manifest.webmanifest')
-        return e.respondWith(new Response(MANIFEST,{headers:{'content-type':'application/manifest+json'}}));
-      if (rel === 'icon.svg')
-        return e.respondWith(new Response(ICON,{headers:{'content-type':'image/svg+xml'}}));
-      e.respondWith(proxy(req, url));
+  navigator.serviceWorker.register(base + 'sw.js', {scope: base})
+    .then(function () { return navigator.serviceWorker.ready; })
+    .then(function () {
+      msg.textContent = '起動中…';
+      location.replace(go.href);
+    })
+    .catch(function (e) {
+      msg.textContent = 'セットアップに失敗しました: ' + (e && e.message || e);
+      go.hidden = false;
     });
-    async function proxy(req, url) {
-      const rel = url.pathname.slice(BASE.length);
-      const target = UPSTREAM + '/' + rel + url.search;
-      const headers = new Headers(req.headers);
-      ['host','connection','keep-alive','transfer-encoding','upgrade',
-       'accept-encoding','origin','referer','sec-fetch-site','sec-fetch-mode',
-       'sec-fetch-dest','sec-fetch-user','cf-connecting-ip','x-forwarded-for',
-       'x-forwarded-proto'].forEach(k => headers.delete(k));
-      let body = null;
-      if (req.method !== 'GET' && req.method !== 'HEAD')
-        try { body = await req.arrayBuffer(); } catch (e) {}
-      let res = await tryFetch(target, {method:req.method, headers, body, credentials:'include', mode:'cors'});
-      if (!res) res = await tryFetch(target, {method:req.method, headers, body, credentials:'omit', mode:'cors'});
-      if (!res) {
-        for (let i=0;i<PROXIES.length && !res;i++) {
-          res = await tryFetch(nextProxy() + encodeURIComponent(target),
-            {method:req.method, headers, body, credentials:'omit', mode:'cors'});
-        }
-      }
-      if (!res) return diagPage(target);
-      const out = new Headers(res.headers);
-      out.delete('content-length');
-      out.delete('content-encoding');
-      out.delete('x-frame-options');
-      var csp = out.get('content-security-policy');
-      if (csp) {
-        csp = csp.replace(/\\s*frame-ancestors[^;]*;?/gi, '').replace(/^\\s*;\\s*/, '').trim();
-        csp ? out.set('content-security-policy', csp) : out.delete('content-security-policy');
-      }
-      var ct = out.get('content-type') || '';
-      if (ct.indexOf('text/html') >= 0) {
-        const html = await res.text();
-        return new Response(inject(html), {status: res.status, headers: out});
-      }
-      return new Response(res.body, {status: res.status, headers: out});
-    }
-    async function tryFetch(url, init) {
-      try {
-        var res = await fetch(url, init);
-        if (res && res.status !== 0) return res;
-      } catch (e) {}
-      return null;
-    }
-    function inject(html) {
-      if (html.indexOf(MARK) >= 0) return html;
-      var head = html.match(/<head[^>]*>/i);
-      if (head) {
-        var i = html.indexOf(head[0]) + head[0].length;
-        return html.slice(0, i) + INJECT + html.slice(i);
-      }
-      var htmlTag = html.match(/<html[^>]*>/i);
-      if (htmlTag) {
-        var i = html.indexOf(htmlTag[0]) + htmlTag[0].length;
-        return html.slice(0, i) + '<head>' + INJECT + '</head>' + html.slice(i);
-      }
-      return INJECT + html;
-    }
-    function diagPage(target) {
-      var body = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        + '<title>Venice Shell</title>'
-        + '<style>body{background:#0b0c0e;color:#e8e8ea;font:14px/1.7 system-ui,sans-serif;padding:28px}h1{font-size:16px}code{background:#1a1a1d;padding:2px 6px;border-radius:4px;font-size:12px;word-break:break-all}p{color:#8a8a92}</style>'
-        + '<h1>上流に届きませんでした</h1>'
-        + '<p>転送先</p><code>' + escapeHtml(target) + '</code>'
-        + '<p>再読み込みしてください。</p>'
-        + '<script data-vs-shell>location.href="/index.html";</' + 'script>';
-      return new Response(body, {status: 502, headers: {'content-type':'text/html; charset=utf-8'}});
-    }
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    }
-    const INJECT = '<link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#0b0c0e"><script data-vs-shell>(function(){\'use strict\';if(window.__veniceShell)return;window.__veniceShell=true;if(navigator.serviceWorker
+})();
+</script>
+</body>
+</html>
